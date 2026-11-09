@@ -1,5 +1,11 @@
 .env
-.env.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.token
+*.secret
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -11,6 +17,11 @@ dist/
 runs/
 data/
 reports/
+outputs/
+*.jsonl
+*.jsonl.gz
 *.log
 *.sqlite
 *.db
+.coverage
+htmlcov/

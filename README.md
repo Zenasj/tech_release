@@ -1,6 +1,6 @@
 # Tech (working release name)
 
-This directory packages the research prototype for PR-derived operator properties and property-guided testing of PyTorch/Inductor and TensorFlow/XLA. The name can be changed before publication. It contains source code and collector rules, but no collected PR corpus, mined property library, test campaign, model weights, or API credentials.
+This directory packages the research prototype for PR-derived operator properties and property-guided testing of PyTorch/Inductor and TensorFlow/XLA. The name can be changed before publication. It contains source code, collector rules, and [the 44 reported issues](materials/ISSUE_REPORT.md), but no collected PR corpus, mined property library, test campaign, model weights, or API credentials. The issue statuses in that report are a dated snapshot, not live GitHub status.
 
 ## Pipeline
 
@@ -121,4 +121,4 @@ If TensorFlow's bridge is unavailable for an operator, the migration audit recor
 
 Collection, PyTorch and TensorFlow mining, and property screening keep resume state under `runs/`. The property screening JSONL audit stores the generated witness and verdict for every candidate. Fuzzing appends `tests.jsonl` and `results.jsonl`, writes deduplicated candidates to `findings.jsonl`, and numbers each completed invocation in `checkpoint.json`. Re-running the command starts a new feedback loop and appends its results; feedback history and seed promotion are scoped to one invocation.
 
-All generated outputs are ignored by Git. Before publishing a repository, review the chosen license and check that only code, configuration examples, and documentation are staged.
+Generated outputs and common credential files are ignored by Git. Publish this directory as a new repository or archive if the parent project's history is not intended for release. Git commits record the configured author name and email; choose the public identity before committing. Review the chosen license and staged files before publication.
