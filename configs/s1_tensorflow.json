@@ -1,0 +1,47 @@
+{
+  "subsystem_rules": {
+    "tensorflow/compiler/jit/": "jit",
+    "tensorflow/compiler/tf2xla/": "tf2xla",
+    "tensorflow/compiler/tf2xla/kernels/": "tf2xla.kernels",
+    "tensorflow/compiler/mlir/tensorflow/": "mlir.tf",
+    "tensorflow/compiler/mlir/tf2xla/": "mlir.tf2xla",
+    "tensorflow/compiler/mlir/": "mlir",
+    "tensorflow/compiler/xla/": "xla.inrepo",
+    "tensorflow/core/ops/": "ops",
+    "tensorflow/core/kernels/": "kernels",
+    "tensorflow/python/ops/": "python.ops",
+    "xla/service/": "xla.service",
+    "xla/service/gpu/": "xla.service.gpu",
+    "xla/hlo/": "xla.hlo",
+    "xla/mlir_hlo/": "xla.mlir_hlo",
+    "xla/backends/": "xla.backends",
+    "xla/stream_executor/": "xla.se",
+    "xla/pjrt/": "xla.pjrt"
+  },
+  "compile_stack": [
+    "jit",
+    "tf2xla",
+    "tf2xla.kernels",
+    "mlir.tf",
+    "mlir.tf2xla",
+    "mlir",
+    "xla.inrepo",
+    "ops",
+    "kernels",
+    "python.ops",
+    "xla.service",
+    "xla.service.gpu",
+    "xla.hlo",
+    "xla.mlir_hlo",
+    "xla.backends"
+  ],
+  "request_timeout_seconds": 30.0,
+  "request_retries": 3,
+  "max_pr_comments": 30,
+  "max_file_pages": 30,
+  "issue_collection": {
+    "max_comments": 30,
+    "max_comment_chars": 20000,
+    "max_link_pages": 30
+  }
+}

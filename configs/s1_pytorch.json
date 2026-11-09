@@ -1,0 +1,40 @@
+{
+  "subsystem_rules": {
+    "torch/_inductor/": "inductor",
+    "torch/_inductor/fx_passes/": "inductor.fx_passes",
+    "torch/_inductor/codegen/": "inductor.codegen",
+    "torch/_inductor/kernel/": "inductor.kernel",
+    "torch/_dynamo/": "dynamo",
+    "torch/_functorch/": "functorch",
+    "torch/_decomp/": "decomp",
+    "torch/_refs/": "refs",
+    "torch/_prims/": "prims",
+    "torch/_meta_registrations.py": "meta",
+    "torch/fx/": "fx",
+    "aten/src/ATen/native/": "aten.native",
+    "aten/": "aten",
+    "torch/csrc/dynamo/": "dynamo.csrc",
+    "torch/csrc/inductor/": "inductor.csrc",
+    "test/inductor/": "test.inductor",
+    "test/dynamo/": "test.dynamo",
+    "test/functorch/": "test.functorch",
+    "docs/": "docs",
+    ".github/": "ci",
+    ".ci/": "ci"
+  },
+  "compile_stack": [
+    "inductor", "inductor.fx_passes", "inductor.codegen", "inductor.kernel",
+    "inductor.csrc", "dynamo", "dynamo.csrc", "functorch", "decomp", "refs",
+    "prims", "meta", "fx", "aten.native", "aten",
+    "test.inductor", "test.dynamo", "test.functorch"
+  ],
+  "request_timeout_seconds": 30.0,
+  "request_retries": 3,
+  "max_pr_comments": 30,
+  "max_file_pages": 30,
+  "issue_collection": {
+    "max_comments": 30,
+    "max_comment_chars": 20000,
+    "max_link_pages": 30
+  }
+}

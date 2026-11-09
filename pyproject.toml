@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tech-property-testing"
+version = "0.1.0"
+description = "PR-derived property mining and property-guided compiler testing"
+requires-python = ">=3.10"
+dependencies = [
+  "cloudpickle>=3.0",
+  "jsonschema>=4.20",
+  "packaging>=24",
+  "pydantic>=2.10,<3",
+  "PyYAML>=6,<7",
+  "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+pytorch = ["torch>=2.3"]
+tensorflow = ["tensorflow>=2.16", "numpy>=1.26"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["mrminer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
