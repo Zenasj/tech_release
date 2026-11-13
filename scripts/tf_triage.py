@@ -1,10 +1,9 @@
-"""Select TensorFlow operator/PR pairs with changed registration evidence.
+"""Select TensorFlow operator/PR pairs from direct code-location evidence.
 
-The linker reads changed diff lines, then this stage keeps functional operators
-with direct schema, kernel, XLA, or gradient evidence. Broad MLIR-only matches
-and structural plumbing operators are excluded. By default only merged PRs are
-considered; users may include an unmerged PR after verifying that its change
-landed through another route.
+The linker reads registration edits and uniquely named implementation files.
+Property extraction, rather than title heuristics, decides which changes carry
+behavioral intent. By default only merged PRs are considered; users may include
+an unmerged PR after verifying that its change landed through another route.
 
 Example: python scripts/tf_triage.py --corpus runs/tensorflow/pr_corpus/tensorflow__tensorflow
 """
@@ -18,27 +17,9 @@ from pathlib import Path
 
 from mrminer.tf.linker_tf import link_pr, op_id
 
-# High-precision registration signals (a real behavior/impl touch of the op).
-_PRECISE = {"schema", "kernel", "xla", "grad"}
+# Direct registration and uniquely named implementation-file signals.
+_PRECISE = {"schema", "kernel", "xla", "grad", "implementation_path"}
 
-# Structural / plumbing ops: appear incidentally in many PRs, not "op X changed".
-_STRUCT = {
-    "Const", "Identity", "Identity_1", "PartitionedCall", "StatefulPartitionedCall",
-    "NoOp", "ReadVariableOp", "Placeholder", "PlaceholderWithDefault", "VarHandleOp",
-    "AssignVariableOp", "BatchFunction", "Merge", "Switch", "Enter", "Exit",
-    "NextIteration", "Cast", "Shape", "Reshape", "Pack", "Unpack", "StridedSlice",
-}
-
-# Non-MR PRs: mechanical / infra / docs / build -- establish no metamorphic relation.
-_NON_MR = (
-    "automated code change", "internal change", "copybara", "rollback of", "roll back",
-    "rollforward", "merge pull request", "bump", "version", "pin ", "requirements",
-    "third_party", "bazel", "build fix", "fix build", "golden", "benchmark",
-    "microbenchmark", "refactor", "cleanup", "clean up", "typo", "flaky", "[ci]",
-    " ci ", "disable", "skip test", "unskip", "docs", "documentation", "rename",
-    "comment", "logging", "test only", "add test", "dead code", "nfc", "lint",
-    "format", "typing", "type hint", "update to", "deprecat",
-)
 
 # Prose signals -> sets aspect (bonus, not required for TF).
 _AXIS = ("xla", "jit_compile", "jit compile", "lowering", "lower ", "fuse", "fusion",
@@ -60,7 +41,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", default="runs/tensorflow/pr_corpus/tensorflow__tensorflow")
     ap.add_argument("--out", default="runs/tensorflow/mining_plan.json")
-    ap.add_argument("--cap", type=int, default=5, help="max PRs per op in the plan")
+    ap.add_argument("--cap", type=int, default=0,
+                    help="optional max PRs per op; 0 keeps every candidate")
     ap.add_argument("--include-unmerged", action="store_true",
                     help="include unmerged PRs only when independently verified as landed")
     ns = ap.parse_args()
@@ -72,7 +54,6 @@ def main() -> int:
     files = sorted(p for p in Path(ns.corpus).glob("*.json") if p.stem.isdigit())
     n_total = 0
     n_unmerged = 0
-    n_nonmr = 0
     n_linked = 0
     # op -> list of (pr_number, signals, aspect, tests_added, has_prose)
     op_edges: dict[str, list] = defaultdict(list)
@@ -87,11 +68,10 @@ def main() -> int:
         if not ns.include_unmerged and not d.get("merged"):
             n_unmerged += 1
             continue
-        title = str(d.get("title") or "")
-        text = (title + " " + _body_text(d)).lower()
-        if any(k in text for k in _NON_MR):
-            n_nonmr += 1
-            continue
+        text = (str(d.get("title") or "") + " " + _body_text(d)).lower()
+        # Intent extraction determines whether a change supports a property.
+        # Titles such as "refactor" or "add test" are not sufficient grounds
+        # for dropping a landed change before looking at its evidence.
         ops = link_pr(d)                      # {op_name: {signals}}, universe-validated
         if not ops:
             continue
@@ -106,8 +86,6 @@ def main() -> int:
         linked_here = False
         for name, signals in ops.items():
             if name not in functional:
-                continue
-            if name in _STRUCT:
                 continue
             if not (signals & _PRECISE):      # mlir-only / no precise signal -> skip
                 continue
@@ -128,13 +106,14 @@ def main() -> int:
     strict_ops = sum(1 for v in op_edges.values() if any(e["prose"] for e in v))
 
     # Build the plan: for each mineable op, keep up to `cap` best PRs
-    # (prefer ones with prose + tests, then more precise signals).
+    # (prefer ones with prose + tests, then more direct signals).
     def score(e):
         return (e["prose"], e["tests"], len(e["signals"]))
 
     plan = []
     for op, edges in sorted(op_edges.items(), key=lambda kv: -len(kv[1])):
-        best = sorted(edges, key=score, reverse=True)[: ns.cap]
+        ranked = sorted(edges, key=score, reverse=True)
+        best = ranked[: ns.cap] if ns.cap else ranked
         plan.append({"op": op, "n_prs_linked": len(edges),
                      "plan_prs": [e["pr"] for e in best],
                      "has_prose": any(e["prose"] for e in edges)})
@@ -144,7 +123,6 @@ def main() -> int:
         "corpus": ns.corpus,
         "prs_total": n_total,
         "prs_unmerged_excluded": n_unmerged,
-        "prs_non_mr_rejected": n_nonmr,
         "prs_mineable": n_linked,
         "candidate_ops": len(op_edges),
         "candidate_edges": all_edges,
@@ -161,7 +139,6 @@ def main() -> int:
 
     print(f"PRs scanned            : {n_total}")
     print(f"  unmerged excluded    : {n_unmerged}")
-    print(f"  non-MR rejected      : {n_nonmr}  ({100*n_nonmr/max(n_total,1):.1f}%)")
     print(f"  mineable (>=1 op)    : {n_linked}")
     print(f"candidate ops          : {len(op_edges)}   (structural + mlir-only excluded)")
     print(f"candidate (op,PR) edges: {all_edges}")

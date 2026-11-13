@@ -1,10 +1,4 @@
-"""LLM generator: (seed + target oracle) -> a batch of tests.
-
-This is the one genuinely new core piece (design doc §3). It reuses the existing
-structured-LLM boundary (`mrminer.llm.provider.invoke_structured`), so a
-FixtureLlmProvider can stand in for the model in M1 and a real DeepSeekProvider
-drops in later with no interface change.
-"""
+"""Generate tests from a source seed, target property, and execution feedback."""
 from __future__ import annotations
 
 import json
@@ -18,57 +12,29 @@ from mrminer.llm.provider import StructuredLlmProvider, invoke_structured
 TASK = "fuzz.generate_tests"
 
 SYSTEM_PROMPT = (
-    "You are a compiler-fuzzing test generator for PyTorch's torch.compile/inductor. "
-    "Given a seed (the aten operators an IR fragment exercises) and ONE target "
-    "MR-oracle (an invariant a real PR established for one operator), write a few "
-    "small, self-contained test programs that exercise that operator in the exact "
-    "domain the oracle targets, trying to make the invariant fail. "
-    "Treat the oracle's `claim` (and `spec`) as the SPECIFIC property to break: read it "
-    "closely and identify the exact precondition and edge it is about -- the dtype, shape, "
-    "stride / memory_format, rank, flags, or boundary VALUES that make the property "
-    "relevant -- then concentrate your inputs at that edge instead of running the operator "
-    "on generic inputs. When the claim names a condition (e.g. a specific dtype like int64 "
-    "or bf16, a size-1 or non-contiguous dimension, preserve_format, an out-of-range / "
-    "subnormal / NaN value, a bool/uint8 index, a decomposition or lowering path), "
-    "construct inputs that ENTER that condition and probe just inside and just outside it; "
-    "prefer a handful of sharply-targeted variants over many generic ones. "
-    "Tailor inputs to the oracle's `aspect`: for `effect` (an eager-raises-implies-"
-    "compiled-raises invariant), deliberately construct inputs the operator SHOULD reject "
-    "in that property's domain -- wrong dtype (e.g. int64/bool where a float is expected), "
-    "out-of-range or negative index, invalid shape / rank / size mismatch -- and see whether "
-    "the compiled path silently ACCEPTS them; for `semantic`, push value-sensitive edges "
-    "(precision boundaries, subnormals, non-contiguous / permuted / size-1 dims, special "
-    "values); for `decision`, drive the exact condition the predicate names (e.g. a bool or "
-    "uint8 index). "
-    "The oracle was established by a real fix PR, so the textbook cases are likely already "
-    "handled: aim at the RESIDUAL corners that fix may miss -- rare dtype combinations, "
-    "size-1 / empty / non-contiguous tensors, composition with an adjacent op, and "
-    "just-past-boundary values -- rather than the exact case the PR already covers. "
-    "Each test's `code` MUST define `def build(): return fn, args` where `fn` is a "
-    "callable and `args` a tuple of positional arguments; import torch inside. "
-    "Do not call torch.compile yourself -- the harness runs eager vs compiled. "
-    "If `mutate_from` is present, take ITS fn and its inputs as a starting point but "
-    "REWRITE each variant into the required `def build(): return fn, args` form: do "
-    "NOT keep `self`, `self.common`, `self.device`, class methods, or asserts -- "
-    "construct the input tensors directly (honor any device in the seed note, e.g. "
-    "device='cuda'), and vary shapes / dtypes / strides / edge cases to stress the "
-    "oracle. "
-    "If the seed note contains a '[FUSION seed' directive, follow it: build the whole "
-    "described op chain inside a SINGLE fn (one compiled region, not separate calls) so "
-    "inductor fuses it, keep the named target op as the one under test, and use the "
-    "requested dtype where the ops allow it. "
-    "Output only build()-form tests. Reason briefly, then output the JSON "
-    "object promptly (do not spend the whole budget thinking)."
+    "Generate a PyTorch test for the target operator property. Use the seed's "
+    "source code as the starting point. First satisfy the property's applicability "
+    "conditions and return the observation it constrains. Then explore corner "
+    "cases along those same dimensions, including zero and one sizes, unusual "
+    "strides or layouts, extreme values, and uncommon dtypes when applicable. "
+    "Read the feedback history: after a skipped test, address the stated reason; "
+    "after an activating test, try a distinct context. Do not change the checker. "
+    "Every code sample must import torch and define build() returning (fn, args), "
+    "where fn is callable and args is a tuple. Inside fn, wrap the one source "
+    "operator call as mark(source_operator_id, callable, *call_args, **call_kwargs) "
+    "and return its result. The harness supplies mark; do not define it. The "
+    "source operator ID is in target_oracle.op. Do not call torch.compile inside "
+    "the test. Return only the requested JSON object."
 )
 
-# --- ablation system prompts (paper §11 variants V3/V4) ------------------------
+# Optional generation controls used by comparison experiments.
 # NOP_SYSTEM_PROMPT (V3 No-P): keep the relation/aspect INTENT the oracle checks,
 # but remove every instruction that targets the property's precondition `P` / its
 # applicable input domain and edge. The generator is told WHAT relation to try to
 # break, but not WHERE (which dtype/shape/flag/boundary) the property applies, so it
 # cannot concentrate inputs at the contract boundary. Used to measure whether `P`
 # guidance raises valid-test rate, precondition-satisfaction rate, and violation hit
-# rate (RQ3, §11.0.4).
+# rate.
 NOP_SYSTEM_PROMPT = (
     "You are a compiler-fuzzing test generator for PyTorch's torch.compile/inductor. "
     "Given a seed (the aten operators an IR fragment exercises) and ONE target "
@@ -83,6 +49,7 @@ NOP_SYSTEM_PROMPT = (
     "exercise value-sensitive inputs; for `decision`, drive the predicate. "
     "Each test's `code` MUST define `def build(): return fn, args` where `fn` is a "
     "callable and `args` a tuple of positional arguments; import torch inside. "
+    "Wrap the designated call inside fn with mark(target_oracle.op, callable, *args). "
     "Do not call torch.compile yourself -- the harness runs eager vs compiled. "
     "If `mutate_from` is present, REWRITE it into the required `def build(): return "
     "fn, args` form (no `self`/class scaffolding/asserts; construct tensors directly, "
@@ -95,7 +62,7 @@ NOP_SYSTEM_PROMPT = (
 # operator(s), never the property (claim/spec/precondition/relation). It does plain
 # generic generation for the op; the mined property-specific checker is still applied
 # downstream by the runner. Used to measure whether property-guided generation makes
-# the corresponding contract boundary easier to reach (RQ3, §11.0.4).
+# the corresponding contract boundary easier to reach.
 GENERIC_SYSTEM_PROMPT = (
     "You are a compiler-fuzzing test generator for PyTorch's torch.compile/inductor. "
     "Given a seed naming one or more aten operators, write a few small, self-contained "
@@ -103,6 +70,7 @@ GENERIC_SYSTEM_PROMPT = (
     "shapes, dtypes, strides, and edge cases) to stress torch.compile/inductor. "
     "Each test's `code` MUST define `def build(): return fn, args` where `fn` is a "
     "callable and `args` a tuple of positional arguments; import torch inside. "
+    "Wrap the designated call inside fn with mark(target_oracle.op, callable, *args). "
     "Do not call torch.compile yourself -- the harness runs eager vs compiled. "
     "If `mutate_from` is present, REWRITE it into the required `def build(): return "
     "fn, args` form (no `self`/class scaffolding/asserts; construct tensors directly, "
@@ -214,6 +182,7 @@ def _input_payload(seed: Seed, oracle: OracleRef, feedback: str,
     elif guidance == "no_p":
         target = {
             "op": oracle.op,
+            "core_operator": oracle.core_operator or oracle.op,
             "aspect": oracle.aspect,
             "variation": oracle.variation,
             "claim": oracle.claim,
@@ -222,29 +191,33 @@ def _input_payload(seed: Seed, oracle: OracleRef, feedback: str,
     else:  # "full"
         target = {
             "op": oracle.op,
+            "core_operator": oracle.core_operator or oracle.op,
             "aspect": oracle.aspect,
             "variation": oracle.variation,   # e.g. {"$decomp": ["default","disabled"]}
             "claim": oracle.claim,           # the PR-grounded intent (guidance)
+            "applicability": oracle.applicability,
+            "observations": list(oracle.observations),
+            "description": oracle.property_record.get("description", ""),
+            "transform": oracle.property_record.get("T", ""),
             "spec": getattr(oracle, "params", {}) or {},  # relation.params: the checker + any
                                              # machine-readable precondition (decision predicate,
                                              # perf config) -- the specific property to break
         }
     payload = {
-        "seed": {"ops": list(seed.ops), "note": seed.note},
+        "seed": {"ops": list(seed.ops), "note": seed.note,
+                 "code": seed.parent_code},
         "target_oracle": target,
         "contract": (
-            "each tests[i].code defines build() -> (fn, args); self-contained; "
-            "import torch inside; no torch.compile call"
+            "each tests[i].code defines build() -> (fn, args); fn calls "
+            "mark(target_oracle.op, callable, *args) around the designated source "
+            "call and returns its result; import framework; no compiler call"
         ),
     }
     if feedback:
-        # M3 feedback hook: prior outcomes for this target, so a real model can
-        # steer (e.g. "these didn't trigger -- vary the input domain"). The
-        # fixture ignores it; it becomes meaningful with a real provider.
+        # Feedback contains prior tests, verdicts, and skip reasons.
         payload["feedback"] = feedback
     if seed.parent_code:
-        # M4 mutation hook: a promoted seed carries a prior interesting test; ask
-        # the model to mutate it rather than generate cold.
+        # Preserve the supplied source test as a concrete starting point.
         payload["mutate_from"] = seed.parent_code
     return payload
 
@@ -264,8 +237,7 @@ def generate(
     swap in a tf.function(jit_compile=True) framing); the input payload / output
     schema / build()-form contract are framework-agnostic and stay shared.
 
-    `guidance` ∈ {"full","no_p","none"} is the paper's generation-side ablation knob
-    (§11 V3/V4): it trims how much of the mined property the generator sees and, when
+    `guidance` trims how much of the mined property the generator sees and, when
     `system_prompt` is not overridden, selects the matching system prompt. The runner's
     checker is unaffected -- only generation guidance changes."""
     eff_prompt = system_prompt or _GUIDANCE_PROMPTS.get(guidance, SYSTEM_PROMPT)

@@ -73,7 +73,7 @@ def _repair_truncated(frag: str) -> str | None:
 
 def _extract_json(text: str) -> dict:
     """Pull the JSON object out of a chat reply, tolerating a QwQ <think> block,
-    ```json fences, and truncation at max_tokens (best-effort repair)."""
+    ```json fences, and truncation at max_tokens."""
     if "</think>" in text:
         text = text.rsplit("</think>", 1)[1]   # keep only the post-reasoning tail
     start = text.find("{")

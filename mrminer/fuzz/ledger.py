@@ -88,6 +88,7 @@ class Ledger:
             "status": v.status, "sig": v.sig,
             "op": f.op, "aspect": f.aspect, "verdict": f.verdict,
             "detail": f.detail, "test_id": f.test_id, "oracle_id": f.oracle_id,
+            "contexts": list(f.contexts),
             "code": code, "minimized": minimized,
         }
         if extra:

@@ -2,7 +2,7 @@
 
 Bootstrap a real initial corpus from the oracle library: every operator that
 carries at least one oracle becomes a seed exercising that operator. (Other
-sources -- official test programs, the private model zoo, hand-written IR
+sources -- official test programs and hand-written IR
 fragments -- plug in the same way by emitting `Seed`s; index-bootstrap is the
 one implemented here.)
 """

@@ -45,7 +45,7 @@ def oracles_for(ops, index: dict[str, list[dict]]) -> list[OracleRef]:
                 else 1))
         for o in entries:
             motif = (o.get("guard") or {}).get("static", {}).get("lowering_motif") or []
-            if motif and not set(motif).issubset(present):
+            if motif and not o.get("property") and not set(motif).issubset(present):
                 continue
             source = (o.get("guard") or {}).get("static", {}).get("source_entry") or {}
             if op.startswith("op:stablehlo::") and source.get("operator") not in present:
@@ -68,6 +68,10 @@ def oracles_for(ops, index: dict[str, list[dict]]) -> list[OracleRef]:
                     variation=(o.get("variation") or {}).get("param_grid") or {},
                     claim=claim,
                     params=(o.get("relation") or {}).get("params") or {},
+                    applicability=(o.get("guard") or {}).get("static") or {},
+                    observations=tuple((o.get("relation") or {}).get("required_observations") or ()),
+                    core_operator=op,
+                    property_record=o.get("property") or {},
                 )
             )
     return refs

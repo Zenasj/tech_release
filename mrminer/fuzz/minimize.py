@@ -1,17 +1,7 @@
-"""Auto-minimization of a triggering test (M5).
-
-Classic delta-debugging (ddmin, Zeller & Hildebrand, "Simplifying and Isolating
-Failure-Inducing Input", TSE'02) over the test's source lines: repeatedly drop
-line-subsets and keep the reduction iff the reduced test still triggers the SAME
-oracle with the SAME verdict. The "still reproduces?" predicate is a real
-isolated run, so minimization is sound by construction (a kept reduction is a
-verified repro).
-
-Line-level ddmin is generic (works on any code string); it won't always shrink
-much on tightly-coupled Python, but every kept step is a checked reproducer.
-"""
+"""Minimize reproducing tests while preserving remaining calls and inputs."""
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -27,6 +17,7 @@ class MinimizeResult:
     after_lines: int
     minimized_code: str
     test_id: str = ""
+    confirmed: bool = False
 
 
 def is_repro(
@@ -77,9 +68,27 @@ def minimize(
     isolate: bool = True, runner: Callable = torch_run_test,
     test_id: str = "",
 ) -> MinimizeResult:
-    """Delta-debug a triggering test down to a minimal still-triggering form."""
-    predicate = lambda ls: is_repro("\n".join(ls), oracle, verdict, isolate=isolate, runner=runner)  # noqa: E731
-    mini = ddmin_lines(code, predicate)
+    """Delete whole standalone calls, preserving input construction and arguments."""
+    lines = code.splitlines()
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        tree = None
+    spans: list[set[int]] = []
+    if tree is not None:
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                    and node.lineno == node.value.lineno
+                    and not lines[node.lineno - 1][:node.col_offset].strip()):
+                spans.append(set(range(node.lineno - 1, node.end_lineno)))
+    kept = set(range(len(lines)))
+    for span in spans:
+        candidate = kept - span
+        reduced = "\n".join(lines[i] for i in sorted(candidate))
+        if is_repro(reduced, oracle, verdict, isolate=isolate, runner=runner):
+            kept = candidate
+    mini = "\n".join(lines[i] for i in sorted(kept))
+    confirmed = is_repro(mini, oracle, verdict, isolate=isolate, runner=runner)
     return MinimizeResult(
         oracle_id=oracle.oracle_id,
         verdict=verdict,
@@ -87,4 +96,5 @@ def minimize(
         after_lines=len(mini.splitlines()),
         minimized_code=mini,
         test_id=test_id,
+        confirmed=confirmed,
     )

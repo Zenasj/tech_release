@@ -12,9 +12,7 @@ into `fuzz_campaign` unchanged. Sources here:
                            generator writes a multi-op program (closer to real IR);
                            the loop attaches every combined op's oracles.
 
-The private model zoo (whole nn.Modules) is consumed by the no-LLM fast-scan lane
-(scripts/sample_and_test_model.py) rather than here: those seeds are not op-keyed
-until traced, which the fast lane already does at run time.
+Whole-module programs require operator tracing before they can be used here.
 """
 from __future__ import annotations
 

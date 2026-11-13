@@ -28,6 +28,10 @@ class OracleRef:
     variation: dict               # param_grid, e.g. {"$decomp": ["default", "disabled"]}
     claim: str                    # the PR-grounded intent -> steers generation
     params: dict = field(default_factory=dict)  # relation.params (decision predicates / perf config)
+    applicability: dict = field(default_factory=dict)
+    observations: tuple[dict, ...] = ()
+    core_operator: str = ""
+    property_record: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -58,3 +62,4 @@ class Finding:
     triggered: bool
     verdict: str                  # e.g. "pass" | "compiled_crash" | "diverged" | "skip:..."
     detail: str = ""
+    contexts: tuple[dict, ...] = ()

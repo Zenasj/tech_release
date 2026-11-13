@@ -161,7 +161,7 @@ def routing_for(op: str) -> dict:
 # (traceable, no persistent state -> the runner's build-once/reuse-args value diff works
 # directly, and this is exactly the #119375 pattern); resource/variable ops cannot create
 # the Variable inside a jit_compiled fn (not XLA-traceable), so the Variable is built in
-# build() and read back -- best-effort, the runner safely skips ones whose repeated-call
+# build() and read back; the runner skips ones whose repeated-call
 # state would accumulate.
 _HINT_ARRAY = (
     "HARNESS REQUIRED (array-handle op): build the `tf.TensorArray(dtype, size=..., "

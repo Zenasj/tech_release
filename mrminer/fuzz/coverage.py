@@ -26,16 +26,19 @@ from mrminer.fuzz.types import Finding
 class Coverage:
     seen: set[tuple[str, str]] = field(default_factory=set)   # (op, oracle_id) validly exercised
     triggers: set[str] = field(default_factory=set)           # oracle_ids that were violated
+    counts: dict[str, int] = field(default_factory=dict)       # activating tests per property
 
     def observe_one(self, f: Finding) -> bool:
         """Fold in one finding; return True iff it covered a new (operator, oracle) pair.
 
         A `skip:*` verdict means the oracle was not validly exercised -> not coverage.
         A triggered finding still records the oracle as violated (for the findings set)."""
-        if f.triggered:
+        if f.triggered and f.verdict not in {"compiled_crash", "worker_died", "worker_timeout"}:
             self.triggers.add(f.oracle_id)
-        if f.verdict.startswith("skip"):
+        if (f.verdict.startswith("skip") or f.verdict.startswith("worker_")
+                or f.verdict == "compiled_crash" or f.verdict.startswith("observed:")):
             return False
+        self.counts[f.oracle_id] = self.counts.get(f.oracle_id, 0) + 1
         key = (f.op, f.oracle_id)
         new = key not in self.seen
         self.seen.add(key)

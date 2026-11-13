@@ -6,8 +6,8 @@ and avoids OOM when several lanes share the machine. The choice is per-test and
 ephemeral (it lives only in that subprocess's `CUDA_VISIBLE_DEVICES`), so it does not
 change any finding (eager-vs-compiled is GPU-agnostic) or affect the next run.
 
-Pool: MRMINER_GPU_POOL (comma-separated ABSOLUTE indices, default "4,5"). We deliberately
-restrict to our own GPUs -- picking "globally freest" could land on another user's card.
+Pool: MRMINER_GPU_POOL (comma-separated absolute indices). Empty by default, so
+the worker inherits the caller's device visibility unless a pool is configured.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import os
 import subprocess
 import time
 
-_DEFAULT_POOL = "4,5"
+_DEFAULT_POOL = ""
 _cache: dict = {"t": 0.0, "gpu": None}
 _CACHE_TTL = 1.5   # seconds; avoid hammering nvidia-smi when tests spawn back-to-back
 

@@ -1,16 +1,16 @@
-"""Extract StableHLO operator IDs from a TensorFlow function's lowering.
+"""Enumerate StableHLO instructions from TensorFlow's textual compiler IR.
 
-The pinned dialect inventory lives in reports/tf/stablehlo_operator_index.json.
-The TensorFlow bridge emits MLIR bytecode, whose operation names are stored as
-NUL-delimited strings. Exact symbol matching avoids TF-op-name heuristics.
+The bundled operator inventory lives in configs/stablehlo_spec_ops.json.
+Each instruction retains its SSA name, ordinal, and source location reference.
 """
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 
-DEFAULT_INDEX = Path("reports/tf/stablehlo_operator_index.json")
+DEFAULT_INDEX = Path(__file__).resolve().parents[2] / "configs/stablehlo_spec_ops.json"
 
 
 def attach_source_contextual_ops(
@@ -33,24 +33,52 @@ def attach_source_contextual_ops(
     return result
 
 
-def program_stablehlo_ops(fn, args, index_path: Path = DEFAULT_INDEX) -> list[str]:
+_OP = re.compile(r"\bstablehlo\.([a-z][a-z0-9_]*)\b")
+_LOCATION = re.compile(r"\bloc\(([^)]+)\)")
+
+
+def program_stablehlo_sites(fn, args, index_path: Path = DEFAULT_INDEX) -> list[dict]:
+    """Enumerate individual StableHLO instructions in the marked call's IR."""
     import tensorflow as tf
-    from tensorflow.compiler.mlir.tensorflow_to_stablehlo.python import (
-        pywrap_tensorflow_to_stablehlo as bridge,
-    )
 
     args = tuple(args) if isinstance(args, (list, tuple)) else (args,)
-    concrete = tf.function(fn).get_concrete_function(*args)
-    module = tf.mlir.experimental.convert_function(concrete)
-    bytecode = bridge.tensorflow_module_to_stablehlo(module)
-    if not bytecode:
-        raise ValueError("TF-to-StableHLO conversion returned no module")
+    compiled = tf.function(fn, jit_compile=True)
+    ir = compiled.experimental_get_compiler_ir(*args)(stage="stablehlo")
+    if not isinstance(ir, str) or not ir:
+        raise ValueError("TensorFlow did not return textual StableHLO IR")
     inventory = json.loads(index_path.read_text(encoding="utf-8"))["ops"]
-    found = []
-    for op_id in inventory:
-        if op_id == "op:stablehlo::return":
+    if isinstance(inventory, list):
+        inventory = {f"op:stablehlo::{name}" for name in inventory}
+    else:
+        inventory = set(inventory)
+    return parse_stablehlo_sites(ir, inventory)
+
+
+def parse_stablehlo_sites(ir: str, inventory: set[str]) -> list[dict]:
+    """Preserve one record per textual instruction, including repeated op names."""
+    sites = []
+    counts: dict[str, int] = {}
+    for line in ir.splitlines():
+        stripped = line.strip()
+        if not (stripped.startswith("%") or stripped.startswith("stablehlo.")
+                or stripped.startswith('"stablehlo.')):
             continue
-        name = op_id.rsplit("::", 1)[-1].encode("ascii")
-        if b"\x00" + name + b"\x00" in bytecode:
-            found.append(op_id)
-    return found
+        match = _OP.search(line)
+        if not match:
+            continue
+        op_id = f"op:stablehlo::{match.group(1)}"
+        if op_id not in inventory or op_id == "op:stablehlo::return":
+            continue
+        ordinal = counts.get(op_id, 0)
+        counts[op_id] = ordinal + 1
+        ssa = stripped.split("=", 1)[0].strip() if stripped.startswith("%") else ""
+        location = _LOCATION.search(line)
+        sites.append({"operator": op_id, "ordinal": ordinal, "ssa": ssa,
+                      "location": location.group(1) if location else "",
+                      "ir_line": stripped})
+    return sites
+
+
+def program_stablehlo_ops(fn, args, index_path: Path = DEFAULT_INDEX) -> list[str]:
+    return list(dict.fromkeys(site["operator"] for site in
+                              program_stablehlo_sites(fn, args, index_path)))

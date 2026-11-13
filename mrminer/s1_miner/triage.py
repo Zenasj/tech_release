@@ -207,7 +207,7 @@ def reverts_of(
     *,
     current_pr: int | None = None,
 ) -> list[int]:
-    """All PR numbers this revert targets, best-effort from text, ordered so the
+    """All PR numbers this revert targets, parsed from text, ordered so the
     first element is the canonical primary target. The primary is chosen by the
     original priority (quoted title #, title #, then a line-anchored body
     ``reverts #N``) so existing single-target results are unchanged; extra

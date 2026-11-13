@@ -6,7 +6,7 @@ extract the op name, then validate it against the TF op universe
 (reports/tf/op_universe.json). Output: op -> {signals} per PR, i.e. the
 TF-op<->PR edges.
 
-Registration forms (design doc §5):
+Registration forms:
   schema   REGISTER_OP("X")                         tensorflow/core/ops/*.cc
   kernel   REGISTER_KERNEL_BUILDER(Name("X")...)    tensorflow/core/kernels/*
   xla      REGISTER_XLA_OP(Name("X"), ...)          compiler/tf2xla/kernels/*
@@ -73,6 +73,15 @@ def link_pr(pr: dict, *, validate: bool = True) -> dict[str, set[str]]:
             if uni is not None and name not in uni:
                 continue
             ops.setdefault(name, set()).update(sigs)
+        # A change to a uniquely named implementation file also supplies a
+        # location signal, even when the changed hunk contains no REGISTER_OP.
+        # For example, xla/hlo/builder/lib/svd.cc can be attributed to Svd.
+        if uni:
+            stem = Path(tf_file.get("path") or tf_file.get("filename") or "").stem.lower()
+            if stem:
+                matches = [name for name in uni if name.lower() == stem]
+                if len(matches) == 1:
+                    ops.setdefault(matches[0], set()).add("implementation_path")
     return ops
 
 

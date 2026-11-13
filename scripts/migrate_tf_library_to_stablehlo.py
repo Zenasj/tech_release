@@ -318,7 +318,7 @@ def probe(name: str) -> tuple[set[str], str]:
                 return found - {"return"}, "probe-ok-qr-custom-call-target"
             return set(), "source-tf-op-remains-after-conversion"
         return found - {"return"}, "probe-ok"
-    except Exception as exc:  # best-effort probe; preserve exact reason for audit
+    except Exception as exc:  # record the exact reason for the audit
         lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
         return set(), f"{type(exc).__name__}: {(lines[-1] if lines else str(exc))[:140]}"
 

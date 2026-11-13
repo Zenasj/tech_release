@@ -41,7 +41,7 @@ _XLA_UNSUPPORTED = (
     "Support for TensorList",
     "TensorList is not initialized",
     "only supported in eager mode",   # test used an eager-only API (e.g. tf.data as_numpy_iterator)
-    "NotImplementedError",            # "we didn't implement this" = by-design boundary, not a bug
+    "NotImplementedError",            # the framework rejects this op by design, not a compiler bug
     "not currently supported",
     "not yet supported",
     "is not supported",
@@ -410,11 +410,20 @@ def run_test(test: GeneratedTest, oracle: OracleRef, *, isolate: bool = True, ti
     except Exception:
         category = "supported"
     if not isolate:
-        res = (_judge_generic_tf(test.code, category) if judge_mode == "generic"
-               else _judge(test.code, oracle.aspect, category))
+        if oracle.property_record and judge_mode in {"oracle", "no_condition"}:
+            from mrminer.fuzz.property_runtime import check_program
+            res = check_program(test.code, oracle.property_record,
+                                operator=oracle.core_operator or oracle.op,
+                                source_operator=oracle.op, framework="tensorflow",
+                                ignore_condition=judge_mode == "no_condition")
+        else:
+            res = (_judge_generic_tf(test.code, category) if judge_mode == "generic"
+                   else _judge(test.code, oracle.aspect, category))
     else:
         job = {"code": test.code, "aspect": oracle.aspect, "category": category,
-               "judge_mode": judge_mode}
+               "judge_mode": judge_mode, "op": oracle.op,
+               "core_operator": oracle.core_operator or oracle.op,
+               "property": oracle.property_record}
         fd, jp = tempfile.mkstemp(suffix=".tffuzzjob.json")
         try:
             with os.fdopen(fd, "w") as f:
@@ -437,6 +446,7 @@ def run_test(test: GeneratedTest, oracle: OracleRef, *, isolate: bool = True, ti
         test_id=test.test_id, oracle_id=oracle.oracle_id, op=oracle.op,
         aspect=oracle.aspect, triggered=res["triggered"],
         verdict=res["verdict"], detail=res["detail"],
+        contexts=tuple(res.get("contexts") or ()),
     )
 
 
@@ -448,6 +458,12 @@ def _worker_main(argv=None) -> int:
     try:
         if job.get("judge_mode", "oracle") == "generic":
             res = _judge_generic_tf(job["code"], job.get("category", "supported"))
+        elif job.get("property"):
+            from mrminer.fuzz.property_runtime import check_program
+            res = check_program(job["code"], job["property"],
+                                operator=job["core_operator"], source_operator=job["op"],
+                                framework="tensorflow",
+                                ignore_condition=job.get("judge_mode") == "no_condition")
         else:
             res = _judge(job["code"], job["aspect"], job.get("category", "supported"))
     except Exception as e:

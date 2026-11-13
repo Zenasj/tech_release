@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -78,21 +79,19 @@ class CampaignResult:
     findings: list[Finding] = field(default_factory=list)
     coverage_size: int = 0
     triggers: list[Finding] = field(default_factory=list)
+    crashes: list[Finding] = field(default_factory=list)
     per_seed: list[dict] = field(default_factory=list)   # seed_id -> stats
     trace: list[dict] = field(default_factory=list)       # per-iteration record
     minimized: list[MinimizeResult] = field(default_factory=list)
 
 
-def _feedback_for(prev: list[Finding]) -> str:
+def _feedback_for(prev: list[tuple[str, Finding]]) -> str:
     """Summarize prior outcomes for a target into a short hint for the generator."""
     if not prev:
         return ""
-    verdicts = sorted({f.verdict for f in prev})
-    if any(f.triggered for f in prev):
-        return ""  # already triggered -- no need to steer
-    return (
-        "previous attempts on this target did not trigger the oracle "
-        f"(verdicts: {', '.join(verdicts)}); try a different input domain / edge case."
+    return "\n\n".join(
+        f"Attempt {i}:\n{code}\nVerdict: {finding.verdict}\nReason: {finding.detail}"
+        for i, (code, finding) in enumerate(prev[-5:], 1)
     )
 
 
@@ -102,46 +101,54 @@ def fuzz_campaign(
     index: dict[str, list[dict]],
     *,
     iterations: int = 10,
-    max_oracles: int | None = 3,
+    max_tests: int | None = None,
     isolate: bool = True,
-    grow: bool = True,
     minimize_triggers: bool = False,
     run_test: Runner = torch_run_test,
     system_prompt: str | None = None,
     guidance: str = "full",
     feedback: bool = True,
+    random_seed: int = 0,
     on_test: Callable[[GeneratedTest, object], None] | None = None,
     on_result: Callable[[GeneratedTest, object, Finding, float], None] | None = None,
 ) -> CampaignResult:
     """Run a feedback loop over generated tests and executable properties.
 
-    Each round samples a seed, prioritizes uncovered properties, generates tests,
-    executes them, and uses verdicts in subsequent prompts. Tests that activate
-    new properties or violate an oracle can become new seeds. ``guidance`` controls
-    property detail in prompts; ``feedback`` controls target prioritization, prompt
-    hints, and seed promotion. Optional callbacks record generated code and verdicts.
+    Each round takes the next seed in shuffled order, targets its least-activated
+    property, generates a test, and feeds its verdict into subsequent prompts.
+    Optional callbacks record generated code and verdicts.
     """
     corpus = Corpus.from_seeds(seeds)
     coverage = Coverage()
     result = CampaignResult()
-    history: dict[str, list[Finding]] = {}   # (seed_id|oracle_id) -> prior findings
+    history: dict[str, list[tuple[str, Finding]]] = {}
+    rng = random.Random(random_seed)
+    seed_order = list(corpus.entries)
+    rng.shuffle(seed_order)
 
     for it in range(iterations):
+        if max_tests is not None and len(result.findings) >= max_tests:
+            break
         if not corpus.entries:
             break
-        # Sample a seed uniformly and prioritize uncovered properties for that seed.
-        entry = corpus.select_uniform()
-        oracles = _select_oracles(oracles_for(entry.seed.ops, index), max_oracles,
-                                  coverage=coverage, feedback=feedback)
+        # Cycle through the fixed seed corpus in random order, as in the paper.
+        if it and it % len(seed_order) == 0:
+            rng.shuffle(seed_order)
+        entry = seed_order[it % len(seed_order)]
+        available = oracles_for(entry.seed.ops, index)
+        rng.shuffle(available)
+        available.sort(key=lambda oracle: coverage.counts.get(oracle.oracle_id, 0))
+        oracles = available[:1] if available else []
 
         round_findings: list[Finding] = []
         gained = 0
-        promoted = 0
         for oracle in oracles:
             key = f"{entry.seed.seed_id}|{oracle.oracle_id}"
             fb_hint = _feedback_for(history.get(key, [])) if feedback else ""
             for test in generate(entry.seed, oracle, provider, feedback=fb_hint,
                                  system_prompt=system_prompt, guidance=guidance):
+                if max_tests is not None and len(result.findings) + len(round_findings) >= max_tests:
+                    break
                 if on_test is not None:
                     on_test(test, oracle)
                 _t0 = time.perf_counter()
@@ -150,38 +157,29 @@ def fuzz_campaign(
                 if on_result is not None:
                     on_result(test, oracle, f, _wall_ms)
                 round_findings.append(f)
-                history.setdefault(key, []).append(f)
+                history.setdefault(key, []).append((test.code, f))
                 is_new = coverage.observe_one(f)
                 gained += int(is_new)
                 # a triggered test is a bug candidate -> minimize it to a repro
-                if minimize_triggers and f.triggered:
+                if minimize_triggers and f.triggered and f.verdict not in {
+                    "compiled_crash", "worker_died", "worker_timeout"}:
                     result.minimized.append(
                         minimize(test.code, oracle, f.verdict, isolate=isolate,
                                  runner=run_test, test_id=test.test_id)
                     )
-                # promote interesting tests to new (mutatable) seeds.
-                # feedback OFF (A5): corpus stays fixed -- promotion is part of the loop.
-                if grow and feedback and (f.triggered or is_new):
-                    promo = Seed(
-                        seed_id=f"seed:promoted:{test.test_id}",
-                        ops=(entry.seed.ops if oracle.op not in index
-                             or any(op.startswith("op:stablehlo::") for op in entry.seed.ops)
-                             else (oracle.op,)),
-                        note=f"promoted from {entry.seed.seed_id}",
-                        parent_code=test.code,
-                        origin="promoted",
-                    )
-                    promoted += int(corpus.add(promo))
 
-        trig = [f for f in round_findings if f.triggered]
+        crashes = [f for f in round_findings if f.verdict in {
+            "compiled_crash", "worker_died", "worker_timeout"}]
+        trig = [f for f in round_findings if f.triggered and f not in crashes]
         corpus.update(entry, gained, len(trig), it)
 
         result.findings.extend(round_findings)
         result.triggers.extend(trig)
+        result.crashes.extend(crashes)
         result.trace.append({
             "iter": it, "seed": entry.seed.seed_id,
             "tests": len(round_findings), "new_cov": gained,
-            "triggers": len(trig), "promoted": promoted,
+            "triggers": len(trig), "crashes": len(crashes),
             "cov_size": coverage.size, "corpus": len(corpus.entries),
         })
 

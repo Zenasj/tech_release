@@ -1,22 +1,18 @@
 """Execute a generated test and judge it against its target oracle.
 
-Semi-black-box: treat the compiler as a black box, run eager vs inductor on the
-same input, decide whether the oracle was triggered (violated). The
-eager-vs-inductor / eager-raises differential is the pattern proven in
-`scripts/targeted_spec_scan.py`; it is re-implemented here (self-contained) so the
-fuzz package does not edit the original script.
+The runner treats the compiler as a black box: it runs the test under eager and
+inductor execution on the same input and decides whether the target oracle is
+violated, through the eager-vs-inductor and eager-raises-vs-compiled-accepts
+differentials.
 
-M2:
-  * **subprocess isolation** (default): each test runs in its own process, so an
-    untrusted / crashing test (CUDA IMA, device-side assert, segfault) cannot
-    poison the driver. Required before running real-LLM output.
+  * **subprocess isolation** (default): each test runs in its own process, so a
+    crashing test (CUDA IMA, device-side assert, segfault) cannot poison the
+    driver.
   * aspects judged: `semantic` (eager vs inductor) and `effect` (eager raises but
     compiled silently accepts = compiled dropped a validation).
-  * `performance` (non-inferiority): exec_mode latency proxy -- median-of-N eager vs
-    inductor. OBSERVE-ONLY: in-loop timing on a shared GPU is noise-prone (micro-ops show
-    fixed-overhead ratios that don't reproduce under controlled benchmarking), so it never
-    raises a trigger (`observed:slower` / `pass`); real non-inferiority needs an isolated
-    benchmark (future work). The mined $patch on/off toggle also can't be actuated here.
+  * `performance` (non-inferiority): a median-of-N eager-vs-inductor latency ratio.
+    In-loop timing is noise-prone, so this channel is observe-only and records the
+    ratio (`observed:slower` / `pass`) without raising a trigger.
   * `decision` (predicate_relation): probe registry keyed on the mined predicate's
     `preferred_probe`. The cudagraph-unsafe probe captures the INDUCTOR post-grad graph
     (via post_grad_custom_post_pass) -- the stage where is_cudagraph_unsafe_fx_node is
@@ -411,13 +407,11 @@ def _iter_tensors(obj):
 
 
 def _judge_performance(fn, args) -> dict:
-    """R_O = non-inferiority: compilation must not make the op meaningfully slower.
+    """Non-inferiority: compilation should not make the op meaningfully slower.
 
-    The mined config toggles a specific optimization patch we cannot actuate on an
-    arbitrary build, so we use exec_mode (eager vs inductor) latency as the observable
-    channel. Timing in the shared multi-lane GPU is noisy, so we only flag a *large*
-    regression (median-of-N, conservative margin); precise judging needs an isolated
-    benchmark (future work)."""
+    The observable channel is exec_mode (eager vs inductor) latency. In-loop timing
+    is noise-prone, so the judgment uses a median-of-N ratio with a conservative
+    margin and records a latency ratio rather than raising on small differences."""
     import time
     import torch
     import torch._dynamo
@@ -470,11 +464,9 @@ def _judge_performance(fn, args) -> dict:
 
     ratio = c / e if e > 0 else float("inf")
     MARGIN, FLOOR = 3.0, 5e-5      # need >3x AND >50us absolute, to clear loop noise
-    # In-loop timing on a shared GPU is noise-prone: micro-ops show large fixed-overhead
-    # ratios that do NOT reproduce under controlled benchmarking (e.g. a constant ~2.3ms
-    # compiled floor across unrelated tiny ops). So we OBSERVE but never raise a trigger
-    # from it -- otherwise every such noise spike becomes a spurious NEW signature.
-    # Real non-inferiority needs an isolated benchmark (warmup/repeat/isolation); future work.
+    # In-loop timing is noise-prone: micro-ops show large fixed-overhead ratios, so this
+    # channel observes a latency ratio and records `observed:slower` only above a large,
+    # conservative margin rather than raising on small differences.
     slower = c > e * MARGIN and (c - e) > FLOOR
     return _r(False, "observed:slower" if slower else "pass",
               f"compiled/eager={ratio:.2f}x (e={e*1e3:.3f}ms c={c*1e3:.3f}ms)")
@@ -614,11 +606,20 @@ def run_test(
     judge_mode: str = "oracle",
 ) -> Finding:
     if not isolate:
-        res = _judge(test.code, oracle.aspect, oracle.op, getattr(oracle, "params", {}),
-                     judge_mode=judge_mode)
+        if oracle.property_record and judge_mode in {"oracle", "no_condition"}:
+            from mrminer.fuzz.property_runtime import check_program
+            res = check_program(test.code, oracle.property_record,
+                                operator=oracle.core_operator or oracle.op,
+                                source_operator=oracle.op, framework="pytorch",
+                                ignore_condition=judge_mode == "no_condition")
+        else:
+            res = _judge(test.code, oracle.aspect, oracle.op, getattr(oracle, "params", {}),
+                         judge_mode=judge_mode)
     else:
         job = {"code": test.code, "aspect": oracle.aspect, "op": oracle.op,
-               "params": getattr(oracle, "params", {}), "judge_mode": judge_mode}
+               "params": getattr(oracle, "params", {}), "judge_mode": judge_mode,
+               "core_operator": oracle.core_operator or oracle.op,
+               "property": oracle.property_record}
         fd, jp = tempfile.mkstemp(suffix=".fuzzjob.json")
         try:
             with os.fdopen(fd, "w") as f:
@@ -641,6 +642,7 @@ def run_test(
         test_id=test.test_id, oracle_id=oracle.oracle_id, op=oracle.op,
         aspect=oracle.aspect, triggered=res["triggered"],
         verdict=res["verdict"], detail=res["detail"],
+        contexts=tuple(res.get("contexts") or ()),
     )
 
 
@@ -650,8 +652,15 @@ def _worker_main(argv=None) -> int:
     ns = ap.parse_args(argv)
     job = json.loads(Path(ns.job).read_text())
     try:
-        res = _judge(job["code"], job["aspect"], job.get("op", ""), job.get("params") or {},
-                     judge_mode=job.get("judge_mode", "oracle"))
+        if job.get("property") and job.get("judge_mode", "oracle") in {"oracle", "no_condition"}:
+            from mrminer.fuzz.property_runtime import check_program
+            res = check_program(job["code"], job["property"],
+                                operator=job["core_operator"], source_operator=job["op"],
+                                framework="pytorch",
+                                ignore_condition=job.get("judge_mode") == "no_condition")
+        else:
+            res = _judge(job["code"], job["aspect"], job.get("op", ""), job.get("params") or {},
+                         judge_mode=job.get("judge_mode", "oracle"))
     except Exception as e:  # never let the worker die silently on a Python error
         res = _r(False, "skip:worker_error", f"{type(e).__name__}: {e}")
     print(_RESULT_MARK + json.dumps(res))
