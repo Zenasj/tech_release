@@ -1,6 +1,6 @@
 # Tech
 
-Tech mines operator properties from merged PRs and uses them to guide testing of PyTorch/Inductor and TensorFlow/XLA. This release contains the implementation, collection rules, and [the 44 reported issues](materials/ISSUE_REPORT.md). The commands below create PR, property, and testing artifacts under `runs/`.
+Tech mines operator properties from merged PRs and uses them to guide testing of PyTorch/Inductor and TensorFlow/XLA. This release contains the implementation, collection rules, [the 44 reported issues](materials/ISSUE_REPORT.md), and [two worked case studies](materials/CASE_STUDIES.md). The commands below create PR, property, and testing artifacts under `runs/`.
 
 ## Pipeline
 
